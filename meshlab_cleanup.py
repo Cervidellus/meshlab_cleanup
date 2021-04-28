@@ -12,15 +12,32 @@ def make_watertight(meshset):
     Then fixes  non-manifold vertices, or deletes the vertices.
     Then closes hole.
     returns the number of vertices removed.
+    In many cases holes cannot be closed. 
     '''
     initial_verts = meshset.current_mesh().vertex_number() 
 
+    meshset.merge_close_vertices(threshold = .01)
+
+    basic_cleanup(meshset)
+
+    #First try and fix
+    meshset.select_non_manifold_edges_()
+    if  meshset.current_mesh().selected_vertex_number() != 0:
+        print('Attempting to fix non-manifold edges by splitting vertices')
+        meshset.repair_non_manifold_edges_by_splitting_vertices()
+
+    basic_cleanup(meshset)
+
+    meshset.select_non_manifold_vertices()
+    if  meshset.current_mesh().selected_vertex_number() != 0:
+        print(f'Attempting to fix non-manifold vertices by splitting')
+        meshset.repair_non_manifold_vertices_by_splitting(vertdispratio = .05)
+
+    #Iteratively remove things that cannot be fixed.
     i = 0
     while(True):
         i +=1
         print(f'Starting iteration {i} of make watertight.')
-
-        basic_cleanup(meshset)
 
         print("Fixing non-manifold edges.")
         removed1 = fix_non_manifold_edges(meshset)
@@ -50,10 +67,11 @@ def make_watertight(meshset):
         meshset.select_none()
         meshset.select_non_manifold_vertices()
         bad_verts = meshset.current_mesh().selected_vertex_number()
+        meshset.select_none()
+        meshset.select_border()
+        border_verts = meshset.current_mesh().selected_vertex_number()
 
-
-
-        print(f'{bad_edge_verts} non-manifold edge vertices and {bad_verts} non-manifold vertices at the end of iteration {i} of make_watertight.')
+        print(f'{bad_edge_verts} non-manifold edge vertices, and {bad_verts} non-manifold vertices, {border_verts} border vertices at the end of iteration {i} of make_watertight.')
         print('')
 
         if bad_edge_verts == 0 and bad_verts == 0:
@@ -94,23 +112,23 @@ def fix_non_manifold_edges(meshset):
 
     if bad_edge_verts != 0:
         #first try repair
-        i = 0
-        while(True):
-            i += 1
-            start_bad = bad_edge_verts
-            print(f'starting iteration {i} of fix_non_manifold_edges by splitting with {start_bad} bad vertices.')
-            meshset.repair_non_manifold_edges_by_splitting_vertices()#fails here....
-            meshset.select_non_manifold_edges_()
-            bad_edge_verts = meshset.current_mesh().selected_vertex_number()
-            print(f'{start_bad} startbad. {bad_edge_verts} bad_edge_verts at end of iteration {i} of fix_non_manifold_edges_by_splitting.')
-            print('')
-            basic_cleanup(meshset)
-            if bad_edge_verts == start_bad or bad_edge_verts == 0:
-                break
+        # i = 0
+        # while(True):
+        #     i += 1
+        #     start_bad = bad_edge_verts
+        #     print(f'starting iteration {i} of fix_non_manifold_edges by splitting with {start_bad} bad vertices.')
+        #     meshset.repair_non_manifold_edges_by_splitting_vertices()#fails here....
+        #     meshset.select_non_manifold_edges_()
+        #     bad_edge_verts = meshset.current_mesh().selected_vertex_number()
+        #     print(f'{start_bad} startbad. {bad_edge_verts} bad_edge_verts at end of iteration {i} of fix_non_manifold_edges_by_splitting.')
+        #     print('')
+        #     basic_cleanup(meshset)
+        #     if bad_edge_verts == start_bad or bad_edge_verts == 0:
+        #         break
     
         #if cannot be repaired, remove
-        if bad_edge_verts != 0:
-            print('Not all non-manifold edges fixed. Removing faces from non-manifold edges.') 
+        # if bad_edge_verts != 0:
+            # print('Not all non-manifold edges fixed. Removing faces from non-manifold edges.') 
             i = 0
             while(True):
                 i += 1
@@ -135,6 +153,13 @@ def fix_non_manifold_edges(meshset):
     return start_verts - meshset.current_mesh().vertex_number()
 
 
+# def split_non_manifold_edges
+
+
+
+
+
+
 
 
 
@@ -150,8 +175,6 @@ def fix_non_manifold_vertices(meshset):
     bad_verts =  meshset.current_mesh().selected_vertex_number()
 
     if bad_verts != 0:
-        
-        #Need to iterate this:
         i = 0
         while(True):
             i +=1
@@ -159,28 +182,28 @@ def fix_non_manifold_vertices(meshset):
             initial_bad = bad_verts#not used?
             #first try repair
             
-            while(True):
-                print(f'Current verts start repairbysplitting:{meshset.current_mesh().vertex_number()}')
-                start_bad = bad_verts
-                meshset.repair_non_manifold_vertices_by_splitting(vertdispratio = 100)#I don't know what this number means!
-                meshset.select_none()
-                meshset.select_non_manifold_vertices()
-                bad_verts = meshset.current_mesh().selected_vertex_number()
-                print(f'Current verts finish repairbysplitting:{meshset.current_mesh().vertex_number()}')
-                if bad_verts == start_bad or bad_verts == 0:
-                    break
+            # while(True):
+            #     print(f'Current verts start repairbysplitting:{meshset.current_mesh().vertex_number()}')
+            #     start_bad = bad_verts
+            #     meshset.repair_non_manifold_vertices_by_splitting(vertdispratio = .05)
+            #     meshset.select_none()
+            #     meshset.select_non_manifold_vertices()
+            #     bad_verts = meshset.current_mesh().selected_vertex_number()
+            #     print(f'Current verts finish repairbysplitting:{meshset.current_mesh().vertex_number()}')
+            #     if bad_verts == start_bad or bad_verts == 0:
+            #         break
             
 
             #If cannot, delete vertices
             while(True):
-                print(f'Current verts start deleteverts:{meshset.current_mesh().vertex_number()}')
+                # print(f'Current verts start deleteverts:{meshset.current_mesh().vertex_number()}')
                 start_bad = bad_verts
                 meshset.select_none()
                 meshset.select_non_manifold_vertices()
                 bad_verts = meshset.current_mesh().selected_vertex_number()
-                print(f'Deleting {bad_verts}')
+                # print(f'Deleting {bad_verts}')
                 meshset.delete_selected_vertices()
-                print(f'Current verts finish delteverts:{meshset.current_mesh().vertex_number()}')
+                # print(f'Current verts finish delteverts:{meshset.current_mesh().vertex_number()}')
                 if bad_verts == start_bad or bad_verts == 0:
                     break   
         
@@ -197,7 +220,7 @@ def fix_non_manifold_vertices(meshset):
     else:
         print('No bad vertices to fix in fix_non_manifold_vertices.')
     print('')
-    print(f'I am about to return {start_verts} - {meshset.current_mesh().vertex_number()}')
+    # print(f'I am about to return {start_verts} - {meshset.current_mesh().vertex_number()}')
     #retunrs 0, when it should have fixed some?
     return start_verts - meshset.current_mesh().vertex_number()
 
