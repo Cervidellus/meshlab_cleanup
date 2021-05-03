@@ -1,11 +1,9 @@
 # %%
 
 import pymeshlab
+import numpy as np
 
-##Important! basic_cleanup is removing duplicate vertices, BUT I need the duplicate vertices to make it manifold. 
-
-
-def make_watertight(meshset):
+def make_watertight(meshset, ambient_occlusion = True, fix_zero_area_faces = True):
     '''
     Makes a mesh watertight.
     First fixes non-manifold edges, or deleted the vertices.
@@ -15,225 +13,144 @@ def make_watertight(meshset):
     In many cases holes cannot be closed. 
     '''
     initial_verts = meshset.current_mesh().vertex_number() 
+    #I was merging close vertices and removing null faces, which caused problems in that it creates zero area holes, which are hard to fix. 
 
-    meshset.merge_close_vertices(threshold = .01)
-
-    basic_cleanup(meshset)
-
-    #First try and fix
-    meshset.select_non_manifold_edges_()
-    if  meshset.current_mesh().selected_vertex_number() != 0:
-        print('Attempting to fix non-manifold edges by splitting vertices')
-        meshset.repair_non_manifold_edges_by_splitting_vertices()
-
-    basic_cleanup(meshset)
-
-    meshset.select_non_manifold_vertices()
-    if  meshset.current_mesh().selected_vertex_number() != 0:
-        print(f'Attempting to fix non-manifold vertices by splitting')
-        meshset.repair_non_manifold_vertices_by_splitting(vertdispratio = .05)
-
-    #Iteratively remove things that cannot be fixed.
-    i = 0
-    while(True):
-        i +=1
-        print(f'Starting iteration {i} of make watertight.')
-
-        print("Fixing non-manifold edges.")
-        removed1 = fix_non_manifold_edges(meshset)
-        print(f'Removed {removed1} vertices in fix_non_manifold_edges\n\n')
-
-        basic_cleanup(meshset)
-
-        print("Fixing non-manifold vertices.")
-        removed2 = fix_non_manifold_vertices(meshset) 
-        print(f'Removed {removed2} vertices in fix_non_manifold_vertices')
-
-        basic_cleanup(meshset)
-
-        print("Closing holes")
-        meshset.close_holes(maxholesize = 150, selfintersection = False, newfaceselected = False)
-        meshset.select_border()
-        border_verts = meshset.current_mesh().selected_vertex_number()
-        print(f'{border_verts} border vertices left after close_holes')
-        if border_verts != 0:
-            print("Failed to close all holes")
-
-        basic_cleanup(meshset)
-
-        meshset.select_none()    
-        meshset.select_non_manifold_edges_()
-        bad_edge_verts = meshset.current_mesh().selected_vertex_number()
-        meshset.select_none()
-        meshset.select_non_manifold_vertices()
-        bad_verts = meshset.current_mesh().selected_vertex_number()
-        meshset.select_none()
-        meshset.select_border()
-        border_verts = meshset.current_mesh().selected_vertex_number()
-
-        print(f'{bad_edge_verts} non-manifold edge vertices, and {bad_verts} non-manifold vertices, {border_verts} border vertices at the end of iteration {i} of make_watertight.')
-        print('')
-
-        if bad_edge_verts == 0 and bad_verts == 0:
-         break
-
-    print('')
-    return initial_verts - meshset.current_mesh().vertex_number()
-
-def basic_cleanup(meshset):
-    #seems to take a long time? Figure it out?
-    #print('basic:cleanup remove dup faces')
-    meshset.remove_duplicate_faces()
-    #print('basic:cleanup remove dup verts')
-    meshset.remove_duplicate_vertices()
-    #print('basic:cleanup remove zero area')
-    meshset.remove_zero_area_faces()
-    #print('basic:cleanup remove unreferenced')
+    # meshset.turn_into_a_pure_triangular_mesh() 
+    # meshset.remove_duplicate_vertices()
+    meshset.remove_duplicate_faces() 
     meshset.remove_unreferenced_vertices()
-    #print('basic:cleanup compact')
     meshset.current_mesh().compact()
+
+    fix_non_manifold(meshset)
+
+    if ambient_occlusion:
+        print('Removing vertices through ambient occlusion')
+        try:
+            vertex_removal_ambient_occlusion(meshset)
+            meshset.close_holes(maxholesize = 150, selfintersection = False, newfaceselected = False)
+            print('Checking non manifold again')
+            fix_non_manifold(meshset)
+            print('moving on')
+        except:
+            print('Ambient occlusion removal failed')
+
+    if fix_zero_area_faces:
+        print('fixing zero area faces')
+        while True:
+            if zero_area_faces(meshset) > 0:
+                #Failing here sometimes? Need a try block?864691136084203884 fails
+                #864691136084203884 would work prior to ambient occlusion
+                #crashes the whole kernel
+                #Works if I do it in ipython calling one at a time?
+                #Is it a memory thing, and if I go slow enough it doesn't crash?
+                print('Fixing zero faces by edge flipping')
+                meshset.remove_t_vertices_by_edge_flip()
+                fix_non_manifold(meshset)
+
+                if zero_area_faces(meshset) > 0:
+                    print('Fixing zero faces by edge collapse')
+                    meshset.remove_t_vertices_by_edge_collapse()
+                    fix_non_manifold(meshset)
+
+                    if zero_area_faces(meshset) > 0:
+                        print('Fixing zero faces by isotropic explicit remeshing')
+                        meshset.remove_zero_area_faces()
+                        meshset.select_none()
+                        meshset.select_border()
+                        meshset.dilate_selection()
+                        meshset.dilate_selection()
+                        fix_non_manifold(meshset)
+
+                        if zero_area_faces(meshset) > 0:
+                            print('Fixing zero faces vertex deletion')
+                            meshset.remove_zero_area_faces()
+                            meshset.select_none()
+                            meshset.select_border()
+                            meshset.delete_selected_vertices()
+                            fix_non_manifold(meshset)
+
+            delete_small_disconnected_component(meshset)
+            if zero_area_faces(meshset) == 0:
+                ('Successfully repaired zero area faces')
+                break
+    meshset.current_mesh().compact()
+    print('Finished make_watertight')
+    return initial_verts - meshset.current_mesh().vertex_number()
 
 def delete_small_disconnected_component(meshset):
     meshset.select_small_disconnected_component()
     meshset.select_vertices_from_faces()
     meshset.delete_selected_faces()
     meshset.delete_selected_vertices()
+    meshset.remove_unreferenced_vertices()
 
 def vertex_removal_ambient_occlusion(meshset):
-    meshset.ambient_occlusion(reqviews = 512, usegpu = True, coneangle = 512)
-    meshset.select_by_vertex_quality(minq = 0, maxq = 0.005)
-    meshset.delete_selected_faces()
-    meshset.delete_selected_vertices()
+    meshset.current_mesh().compact()
+    meshset.select_none()
+    meshset.ambient_occlusion(reqviews = 1024, usegpu = True, coneangle = 1024)
+    vertex_quality_array = meshset.current_mesh().vertex_quality_array()
+    min_quality = np.min(vertex_quality_array)
+    if min_quality < 0.005:
+        meshset.select_by_vertex_quality(minq = min_quality, maxq = 0.005, inclusive = False)
+        print(f'Removing {meshset.current_mesh().selected_vertex_number()} vertices in vertex_removal_ambient_occlusion')
+        meshset.delete_selected_faces()
+        meshset.delete_selected_vertices()
+        delete_small_disconnected_component(meshset)
+        meshset.current_mesh().compact()
+    else:
+        print('No vertices to remove in vertex_removal_ambient_occlusion')
 
-def fix_non_manifold_edges(meshset):
-    start_verts = meshset.current_mesh().vertex_number() 
+def is_2_manifold(meshset):
     meshset.select_non_manifold_edges_()
-    bad_edge_verts =  meshset.current_mesh().selected_vertex_number()
-
-    if bad_edge_verts != 0:
-        #first try repair
-        # i = 0
-        # while(True):
-        #     i += 1
-        #     start_bad = bad_edge_verts
-        #     print(f'starting iteration {i} of fix_non_manifold_edges by splitting with {start_bad} bad vertices.')
-        #     meshset.repair_non_manifold_edges_by_splitting_vertices()#fails here....
-        #     meshset.select_non_manifold_edges_()
-        #     bad_edge_verts = meshset.current_mesh().selected_vertex_number()
-        #     print(f'{start_bad} startbad. {bad_edge_verts} bad_edge_verts at end of iteration {i} of fix_non_manifold_edges_by_splitting.')
-        #     print('')
-        #     basic_cleanup(meshset)
-        #     if bad_edge_verts == start_bad or bad_edge_verts == 0:
-        #         break
-    
-        #if cannot be repaired, remove
-        # if bad_edge_verts != 0:
-            # print('Not all non-manifold edges fixed. Removing faces from non-manifold edges.') 
-            i = 0
-            while(True):
-                i += 1
-                start_bad = bad_edge_verts
-                print(f'starting iteration {i} of fix_non_manifold_edges_by_removing_faces with {start_bad} bad vertices.')
-                meshset.repair_non_manifold_edges_by_removing_faces()
-                basic_cleanup(meshset)
-                meshset.select_non_manifold_edges_()
-                bad_edge_verts = meshset.current_mesh().selected_vertex_number()
-                print(f'{start_bad} startbad. {bad_edge_verts} bad_edge_verts at end of iteration {i} of repair_non_manifold_edges_by_removing_face.')
-                if bad_edge_verts == start_bad or bad_edge_verts == 0:
-                    break 
-
-    else:
-        print('No non-manifold edges to fix')
-
-    if bad_edge_verts != 0:
-        print("Was not able to fix all non-manifold edges.")
-
-    print(f'start_verts:{start_verts}, current_verts: {meshset.current_mesh().vertex_number()}')
-
-    return start_verts - meshset.current_mesh().vertex_number()
-
-
-# def split_non_manifold_edges
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def fix_non_manifold_vertices(meshset):
-    start_verts = meshset.current_mesh().vertex_number()
+    if meshset.current_mesh().selected_vertex_number() != 0:
+        return False
     meshset.select_non_manifold_vertices()
-    bad_verts =  meshset.current_mesh().selected_vertex_number()
+    if meshset.current_mesh().selected_vertex_number() != 0:
+        return False
+    return True
 
-    if bad_verts != 0:
-        i = 0
-        while(True):
-            i +=1
-            print(f'starting iteration {i} of fix_non_manifold_vertices {bad_verts} bad vertices.')
-            initial_bad = bad_verts#not used?
-            #first try repair
-            
-            # while(True):
-            #     print(f'Current verts start repairbysplitting:{meshset.current_mesh().vertex_number()}')
-            #     start_bad = bad_verts
-            #     meshset.repair_non_manifold_vertices_by_splitting(vertdispratio = .05)
-            #     meshset.select_none()
-            #     meshset.select_non_manifold_vertices()
-            #     bad_verts = meshset.current_mesh().selected_vertex_number()
-            #     print(f'Current verts finish repairbysplitting:{meshset.current_mesh().vertex_number()}')
-            #     if bad_verts == start_bad or bad_verts == 0:
-            #         break
-            
+def zero_area_faces(meshset):
+    meshset.current_mesh().compact()
+    meshset.select_none()
+    meshset.per_face_quality_according_to_triangle_shape_and_aspect_ratio(metric = 'Area')
+    face_quality = meshset.current_mesh().face_quality_array()#returns numpy array
+    num_zero_area = face_quality.size - np.count_nonzero(face_quality)
+    print(f'{num_zero_area} zero area faces found.')
+    return num_zero_area
 
-            #If cannot, delete vertices
-            while(True):
-                # print(f'Current verts start deleteverts:{meshset.current_mesh().vertex_number()}')
-                start_bad = bad_verts
-                meshset.select_none()
-                meshset.select_non_manifold_vertices()
-                bad_verts = meshset.current_mesh().selected_vertex_number()
-                # print(f'Deleting {bad_verts}')
+
+def fix_non_manifold(meshset):
+    if not is_2_manifold(meshset):
+        print('Mesh not 2-manifold')
+        while True:
+            #First fix non-manifold edges
+            print('Fixing non-manifold edges')
+            meshset.select_non_manifold_edges_()
+            if meshset.current_mesh().selected_vertex_number() != 0:
+                meshset.repair_non_manifold_edges_by_removing_faces()
+            meshset.select_non_manifold_edges_()
+            if meshset.current_mesh().selected_vertex_number() != 0:
+                print('Failed to fix all non-manifold edges through edge removal, deleting remaining')
                 meshset.delete_selected_vertices()
-                # print(f'Current verts finish delteverts:{meshset.current_mesh().vertex_number()}')
-                if bad_verts == start_bad or bad_verts == 0:
-                    break   
-        
-            if bad_verts == 0:
-                print(f'All non-manifold vertices fixed in iteration {i} of fix_non_manifold_vertices')
-                print(f'Current verts before break:{meshset.current_mesh().vertex_number()}')
-                break
 
-        if bad_verts != 0:
-            print("Was not able to fix all non-manifold vertices")
-        print(f'Current verts before final cleanup:{meshset.current_mesh().vertex_number()}')
-        basic_cleanup(meshset)#IMPORTANT, here it merges teh duplicate vertices!
-        print(f'Current verts after final cleanup:{meshset.current_mesh().vertex_number()}')
-    else:
-        print('No bad vertices to fix in fix_non_manifold_vertices.')
-    print('')
-    # print(f'I am about to return {start_verts} - {meshset.current_mesh().vertex_number()}')
-    #retunrs 0, when it should have fixed some?
-    return start_verts - meshset.current_mesh().vertex_number()
+            print('Fixing non-manifold vertices')
+            #Next, fix remaining non-manifold vertices
+            meshset.select_non_manifold_vertices()
+            if  meshset.current_mesh().selected_vertex_number() != 0:
+                meshset.repair_non_manifold_vertices_by_splitting(vertdispratio = .05)
+            meshset.select_non_manifold_vertices()
 
+            #Maybe I need to iterate eiterh this method or the whole fix_non_manifold?
+            if meshset.current_mesh().selected_vertex_number() != 0:
+                print('Failed to fix all non-manifold vertices through vertex splitting, deleting remaining')
+                meshset.delete_selected_vertices()
 
+            meshset.close_holes(maxholesize = 150, selfintersection = False, newfaceselected = False)
+            meshset.remove_unreferenced_vertices()
+            meshset.current_mesh().compact()
 
-
-
-
-
-
-
-
-
+            if is_2_manifold(meshset):
+               break
 
 def fix_self_intersecting(meshset):
     #This needs work! Don't trust it!
